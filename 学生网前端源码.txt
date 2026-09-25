@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>三十五中学生网 </title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://js.pusher.com/8.0.1/pusher.min.js"></script>
+  <style>
+    body {
+      background: linear-gradient(135deg, #0a2463 0%, #3e92cc 100%);
+    }
+    .card {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+      backdrop-filter: blur(6px);
+    }
+    a.contact { color: #dbeafe; }
+    .section { display: none; opacity: 0; transform: translateY(6px); transition: opacity 220ms ease, transform 220ms ease; }
+    .section.active { display: block; opacity: 1; transform: translateY(0); }
+    .drop-active { outline: 4px dashed rgba(255,255,255,0.25); background: rgba(255,255,255,0.03); }
+    .disclaimer {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.05);
+      padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem;
+      line-height: 1.5;
+    }
+    .disclaimer h3 { margin-bottom: 0.5rem; font-size: 1rem; font-weight: 600; }
+    .disclaimer p { margin-bottom: 0.4rem; color: #dbeafe; font-size: 0.9rem; }
+    .remote-download {
+      position: absolute; top: 8px; right: 8px;
+      background: rgba(255,255,255,0.08); color: #fff;
+      padding: 6px 8px; border-radius: 6px; font-size: 12px;
+      cursor: pointer; z-index: 2;
+    }
+    .program-card { position: relative; cursor: pointer; }
+    .play-overlay { position: absolute; inset: 0; display:flex; align-items:center; justify-content:center; pointer-events:none; }
+    .play-button { width:64px; height:64px; background: rgba(0,0,0,0.45); border-radius:50%; display:flex; align-items:center; justify-content:center; pointer-events:auto; }
+    .play-button svg { fill: #fff; width:28px; height:28px; margin-left:4px;}
+    .delete-btn {
+      position: absolute; left: 8px; top: 8px;
+      background: rgba(220, 38, 38, 0.9); color: #fff;
+      padding: 6px 8px; border-radius: 6px; font-size: 12px;
+      cursor: pointer; z-index: 3; border: none;
+    }
+    .audit-pass {
+      background: #10b981; color: white; padding: 6px 10px; border-radius: 6px; font-size: 14px;
+    }
+    .audit-reject {
+      background: #ef4444; color: white; padding: 6px 10px; border-radius: 6px; font-size: 14px;
+    }
+    .status-tag {
+      position: absolute; bottom: 8px; right: 8px;
+      padding: 2px 8px; border-radius: 999px; font-size: 12px;
+    }
+    .status-pending { background: #f59e0b; color: white; }
+    .status-passed { background: #10b981; color: white; }
+    .status-rejected { background: #ef4444; color: white; }
+    .clear-library-note { font-size: 0.9rem; color: #ffd7d7; margin-left: 0.5rem; }
+  </style>
+</head>
+<body class="min-h-screen text-white">
+<header class="py-6 text-center">
+  <img src="logo.png" alt="三十五中学生网" class="mx-auto h-28 rounded-full shadow-lg bg-white/10 p-2">
+  <h1 class="text-3xl md:text-4xl font-bold mt-2 drop-shadow-md">三十五中学生网 </h1>
+  <p class="text-blue-200 text-sm mt-1">内容需管理员审核后展示</p>
+</header>
+
+<nav class="flex flex-wrap justify-center gap-6 text-lg py-4 border-b border-blue-300 bg-blue-900/30 backdrop-blur shadow">
+  <a href="#home" class="nav-link hover:text-blue-200 transition">首页</a>
+  <a href="#video" class="nav-link hover:text-blue-200 transition">视频库</a>
+  <a href="#audit" class="nav-link hover:text-blue-200 transition">视频审核</a>
+  <a href="#about" class="nav-link hover:text-blue-200 transition">关于我们</a>
+</nav>
+
+<main class="container mx-auto py-10 px-4">
+  <!-- 首页 -->
+  <section id="home" class="section active">
+    <div class="max-w-3xl mx-auto disclaimer">
+      <h3>⚠️ 安全免责声明（请务必阅读）</h3>
+      <p>1. 本平台仅用于校内学生作品展示，所有上传内容必须为原创或已获得合法授权。</p>
+      <p>2. 严禁上传涉及色情、暴力、违法、谣言、隐私、版权侵权的任何内容，违者自行承担全部法律责任。</p>
+      <p>3. 用户上传的所有内容将进入管理员审核流程，审核通过后方可公开显示，平台有权拒绝或删除任何违规内容。</p>
+      <p>4. 平台不保证服务不间断，不承担因网络、设备、系统故障等不可抗力导致的数据损失。</p>
+      <p>5. 任何因使用本平台产生的纠纷，由内容上传者承担全部责任，与平台及管理员无关。</p>
+      <p>6. 内容一经上传，即表示用户已阅读、理解并同意本声明全部条款。</p>
+      <p>负责人：赵明锐｜邮箱：ZhaoMingrui@outlook.com</p>
+    </div>
+
+    <div class="max-w-3xl mx-auto card rounded-lg p-6 mb-8">
+      <h2 class="text-2xl font-semibold mb-4">上传节目 / 封面</h2>
+      <label class="block text-sm text-blue-100 mb-1">作者姓名（必填）</label>
+      <input id="authorInput" type="text" placeholder="请输入你的名字"
+             class="w-full px-3 py-2 rounded bg-white/10 mb-4">
+      <div id="dropZone" class="border-2 border-dashed border-white/20 rounded-lg p-6 text-center cursor-pointer bg-white/5">
+        <p class="mb-2">拖放文件到此处，或者</p>
+        <button id="selectBtn" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded">选择文件</button>
+        <p class="mt-3 text-sm text-blue-200">支持图片/视频，多文件</p>
+        <input id="fileInput" type="file" accept="image/*,video/*" multiple class="hidden">
+      </div>
+      <div class="mt-4">
+        <button id="uploadBtn" class="bg-green-600 hover:bg-green-500 px-4 py-2 rounded">提交审核</button>
+      </div>
+      <p class="mt-2 text-sm text-blue-200">内容将进入待审核，管理员通过后公开显示</p>
+    </div>
+
+    <div class="max-w-3xl mx-auto card rounded-lg p-6">
+      <h3 class="text-xl mb-3 font-medium">待提交预览</h3>
+      <div id="previewList" class="grid grid-cols-1 gap-3"></div>
+    </div>
+  </section>
+
+  <!-- 视频库（仅显示已通过） -->
+  <section id="video" class="section mt-6">
+    <div class="flex items-center justify-between">
+      <h2 class="text-2xl mb-6 font-semibold border-l-4 border-blue-400 pl-3">已通过节目库</h2>
+      <div>
+        <button id="clearLibraryBtn" class="bg-red-600 hover:bg-red-500 px-4 py-2 rounded">清空库</button>
+        <span class="clear-library-note">需密码</span>
+      </div>
+    </div>
+    <div id="programGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"></div>
+  </section>
+
+  <!-- 视频审核（管理员） -->
+  <section id="audit" class="section mt-6">
+    <div class="max-w-3xl mx-auto mb-6">
+      <button id="showAuditBtn" class="bg-yellow-500 hover:bg-yellow-400 px-4 py-2 rounded">进入管理员审核</button>
+      <p class="text-sm text-blue-200 mt-1">点击后输入管理员密码</p>
+    </div>
+    <div id="auditPanel" class="hidden">
+      <h2 class="text-2xl mb-6 font-semibold border-l-4 border-yellow-400 pl-3">待审核内容</h2>
+      <div id="auditGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"></div>
+    </div>
+  </section>
+
+  <!-- 关于我们 -->
+  <section id="about" class="section mt-6">
+    <div class="max-w-3xl mx-auto card rounded-lg p-6">
+      <h2 class="text-2xl font-semibold mb-4">关于我们</h2>
+      <p>三十五中学生网 · 内容审核版</p>
+      <p>负责人：赵明锐</p>
+      <p>邮箱：ZhaoMingrui@outlook.com</p>
+    </div>
+  </section>
+</main>
+
+<script>
+// 路由
+const sections = Array.from(document.querySelectorAll('.section'));
+const navLinks = Array.from(document.querySelectorAll('.nav-link'));
+function setActiveSection(hash) {
+  const target = hash || '#home';
+  sections.forEach(s => s.classList.toggle('active', '#'+s.id === target));
+  navLinks.forEach(a => a.classList.toggle('text-yellow-200', a.getAttribute('href') === target));
+}
+window.addEventListener('hashchange', () => setActiveSection(location.hash));
+window.addEventListener('DOMContentLoaded', () => {
+  if (!location.hash) location.hash = '#home';
+  setActiveSection(location.hash);
+  initUploader();
+  loadAllData();
+});
+
+// 常量
+const ADMIN_PASSWORD = 'cphrqrdc';
+const STORAGE_PASSED = 'video_passed';
+const STORAGE_PENDING = 'video_pending';
+
+// 工具
+function formatBytes(bytes) {
+  if(bytes===0)return'0 B';const k=1024;const s=['B','KB','MB','GB'];
+  const i=Math.floor(Math.log(bytes)/Math.log(k));
+  return parseFloat((bytes/Math.pow(k,i)).toFixed(2))+' '+s[i];
+}
+function getId() { return Math.random().toString(36).slice(2,10); }
+
+// 本地存储
+function get(key) { try { return JSON.parse(localStorage.getItem(key))||[]; }catch(e){return[];}}
+function set(key,data) { localStorage.setItem(key,JSON.stringify(data)); }
+
+// 加载所有
+function loadAllData() {
+  renderPassed();
+  renderAudit();
+}
+
+// 初始化上传
+function initUploader() {
+  const fileInput = document.getElementById('fileInput');
+  const selectBtn = document.getElementById('selectBtn');
+  const dropZone = document.getElementById('dropZone');
+  const previewList = document.getElementById('previewList');
+  const uploadBtn = document.getElementById('uploadBtn');
+  const authorInput = document.getElementById('authorInput');
+  let pendingFiles = [];
+
+  selectBtn.onclick = () => fileInput.click();
+  fileInput.onchange = e => handleFiles(e.target.files);
+
+  ['dragenter','dragover'].forEach(evt => {
+    dropZone.addEventListener(evt,e=>{e.preventDefault(); dropZone.classList.add('drop-active')});
+  });
+  ['dragleave','drop'].forEach(evt => {
+    dropZone.addEventListener(evt,e=>{e.preventDefault(); dropZone.classList.remove('drop-active')});
+  });
+  dropZone.ondrop = e => handleFiles(e.dataTransfer.files);
+
+  function handleFiles(files) {
+    Array.from(files).forEach(file => {
+      const id = getId();
+      const entry = {id, file, name:file.name, type:file.type, size:file.size};
+      pendingFiles.push(entry);
+      renderPreview(entry);
+    });
+  }
+
+  function renderPreview(entry) {
+    const card = document.createElement('div');
+    card.className = 'bg-white/5 rounded p-3 flex gap-3';
+    const media = document.createElement('div');
+    media.className = 'w-36 h-24 bg-black/20 rounded overflow-hidden';
+    if (entry.type.startsWith('image/')) {
+      const img = document.createElement('img');
+      img.className = 'w-full h-full object-cover';
+      img.src = URL.createObjectURL(entry.file);
+      media.appendChild(img);
+    } else if (entry.type.startsWith('video/')) {
+      const v = document.createElement('video');
+      v.className = 'w-full h-full object-cover';
+      v.src = URL.createObjectURL(entry.file);
+      v.controls = true;
+      media.appendChild(v);
+    }
+    const info = document.createElement('div');
+    info.className = 'flex-1';
+    info.innerHTML = `<div class="font-medium">${entry.name}</div>
+    <div class="text-sm text-blue-200">${formatBytes(entry.size)}</div>`;
+    card.appendChild(media);
+    card.appendChild(info);
+    previewList.appendChild(card);
+  }
+
+  // 提交审核（用户）
+  uploadBtn.onclick = () => {
+    const author = authorInput.value.trim();
+    if (!author) return alert('请填写作者姓名');
+    if (pendingFiles.length === 0) return alert('请选择文件');
+    pendingFiles.forEach(entry => {
+      const blobUrl = URL.createObjectURL(entry.file);
+      const item = {
+        id: entry.id, name: entry.name, type: entry.type,
+        author, blobUrl, time: new Date().toLocaleString()
+      };
+      const list = get(STORAGE_PENDING);
+      list.unshift(item);
+      set(STORAGE_PENDING, list);
+    });
+    pendingFiles = [];
+    previewList.innerHTML = '';
+    alert('提交成功！等待管理员审核');
+    renderAudit();
+  };
+
+  // 进入审核面板
+  document.getElementById('showAuditBtn').onclick = () => {
+    const pwd = prompt('请输入管理员密码：');
+    if (pwd !== ADMIN_PASSWORD) return alert('密码错误');
+    document.getElementById('auditPanel').classList.remove('hidden');
+    renderAudit();
+  };
+
++ // 清空已通过
+  do
+cument.getElementById('clearLibraryBtn
+
+11').onclick = () => {
+    const pwd = prompt('密码：');
+    if (pwd !== ADMIN_PASSWORD) return alert('密码错误') 000000000000000000000000000000000000000000000000....0
+    if (!confirm('确定清空已通过内容？'))  00000000000000000000000000                                  
+                                          ==【=【-                  ，-rn;
+    set(STORAGE_PASSED, []);
+    renderPassed();
+  };
+}
+
+// 渲染待审核
+function renderAudit() {
+  const grid = document.getElementById('auditGrid');
+  grid.innerHTML = '';
+  const list = get(STORAGE_PENDING);
+  list.forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'bg-blue-900/60 rounded-lg overflow-hidden shadow-md relative program-card';
+    card.dataset.id = item.id;
+
+    if (item.type.startsWith('image/')) {
+      const img = document.createElement('img');
+      img.src = item.blobUrl;
+      img.className = 'w-full h-48 object-cover';
+      card.appendChild(img);
+    } else if (item.type.startsWith('video/')) {
+      const v = document.createElement('video');
+      v.src = item.blobUrl;
+      v.className = 'w-full h-48 object-cover';
+      card.appendChild(v);
+      card.innerHTML += `<div class="play-overlay"><div class="play-button"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg></div></div>`;
+    }
+
+    const info = document.createElement('div');
+    info.className = 'p-4 text-lg font-medium';
+    info.textContent = `${item.name}｜${item.author}`;
+    card.appendChild(info);
+
+    const tag = document.createElement('div');
+    tag.className = 'status-tag status-pending';
+    tag.textContent = '待审核';
+    card.appendChild(tag);
+
+    const box = document.createElement('div');
+    box.className = 'p-4 flex gap-3';
+    const ok = document.createElement('button');
+    ok.className = 'audit-pass flex-1';
+    ok.textContent = '✅ 放行';
+    ok.onclick = () => passItem(item.id);
+    const no = document.createElement('button');
+    no.className = 'audit-reject flex-1';
+    no.textContent = '❌ 拒绝';
+    no.onclick = () => rejectItem(item.id);
+    box.appendChild(ok);
+    box.appendChild(no);
+    card.appendChild(box);
+
+    card.onclick = (e) => {
+      if (e.target.tagName === 'BUTTON') return;
+      openMediaModal(item.blobUrl, item.type.startsWith('video/')?'video':'image', item.name);
+    };
+    grid.appendChild(card);
+  });
+}
+
+// 渲染已通过
+function renderPassed() {
+  const grid = document.getElementById('programGrid');
+  grid.innerHTML = '';
+  const list = get(STORAGE_PASSED);
+  list.forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'bg-blue-900/60 rounded-lg overflow-hidden shadow-md hover:scale-105 transition-transform program-card relative';
+    card.dataset.id = item.id;
+
+    if (item.type.startsWith('image/')) {
+      const img = document.createElement('img');
+      img.src = item.blobUrl;
+      img.className = 'w-full h-48 object-cover';
+      card.appendChild(img);
+    } else if (item.type.startsWith('video/')) {
+      const v = document.createElement('video');
+      v.src = item.blobUrl;
+      v.className = 'w-full h-48 object-cover';
+      card.appendChild(v);
+      card.innerHTML += `<div class="play-overlay"><div class="play-button"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg></div></div>`;
+    }
+
+    const info = document.createElement('div');
+    info.className = 'p-4 text-lg font-medium';
+    info.textContent = `${item.name}｜${item.author}`;
+    card.appendChild(info);
+
+    const tag = document.createElement('div');
+    tag.className = 'status-tag status-passed';
+    tag.textContent = '已通过';
+    card.appendChild(tag);
+
+    const del = document.createElement('button');
+    del.className = 'delete-btn';
+    del.textContent = '删除';
+    del.onclick = e => {
+      e.stopPropagation();
+      const pwd = prompt('密码：');
+      if (pwd !== ADMIN_PASSWORD) return alert('密码错误');
+      let arr = get(STORAGE_PASSED);
+      arr = arr.filter(i => i.id !== item.id);
+      set(STORAGE_PASSED, arr);
+      renderPassed();
+    };
+    card.appendChild(del);
+
+    card.onclick = () => openMediaModal(item.blobUrl, item.type.startsWith('video/')?'video':'image', item.name);
+    grid.appendChild(card);
+  });
+}
+
+// 审核操作
+function passItem(id) {
+  const pending = get(STORAGE_PENDING);
+  const item = pending.find(i => i.id === id);
+  if (!item) return;
+  const passed = get(STORAGE_PASSED);
+  passed.unshift(item);
+  set(STORAGE_PASSED, passed);
+  const newPending = pending.filter(i => i.id !== id);
+  set(STORAGE_PENDING, newPending);
+  renderAudit();
+  renderPassed();
+}
+function rejectItem(id) {
+  if (!confirm('确定拒绝并删除？')) return;
+  const pending = get(STORAGE_PENDING).filter(i => i.id !== id);
+  set(STORAGE_PENDING, pending);
+  renderAudit();
+}
+
+// 媒体模态
+function openMediaModal(src, type, name) {
+  if (!window.__modal) createModal();
+  window.openMediaModal(src, type, name);
+}
+function createModal() {
+  const m = document.createElement('div');
+  m.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/75';
+  m.innerHTML = `<div class="bg-neutral-900 rounded relative p-2 max-w-[90%] max-h-[90%]">
+    <button id="mclose" class="absolute right-2 top-2 bg-red-600 px-2 rounded text-white">✕</button>
+    <div id="mbody" class="flex items-center justify-center"></div>
+    <div id="mtext" class="text-white p-2 text-center"></div>
+  </div>`;
+  document.body.appendChild(m);
+  const b = m.querySelector('#mbody');
+  const t = m.querySelector('#mtext');
+  const c = m.querySelector('#mclose');
+  window.openMediaModal = (src, type, name) => {
+    b.innerHTML = ''; t.textContent = name;
+    if (type === 'video') {
+      const v = document.createElement('video');
+      v.src = src; v.controls = true; v.autoplay = true;
+      v.style.maxWidth = '90vw'; v.style.maxHeight = '80vh';
+      b.appendChild(v);
+    } else {
+      const i = document.createElement('img');
+      i.src = src; i.style.maxWidth = '90vw'; i.style.maxHeight = '80vh';
+      b.appendChild(i);
+    }
+    m.style.display = 'flex';
+  };
+  c.onclick = () => m.style.display = 'none';
+  m.onclick = e => e.target === m && (m.style.display = 'none');
+  window.__modal = true;
+}
+</script>
+</body>
+</html>
