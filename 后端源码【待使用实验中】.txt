@@ -1,0 +1,1371 @@
+三十五中学生网——Windows 服务器后端源码
+==================================================
+
+一、项目结构
+==================================================
+
+student-network/
+├─ server.js
+├─ package.json
+├─ .env.example
+├─ start.bat
+├─ data/
+├─ uploads/
+└─ public/
+   ├─ index.html
+   └─ logo.png
+
+说明：
+
+1. data/ 用于保存 SQLite 数据库。
+2. uploads/ 用于保存用户上传的视频和图片。
+3. public/ 用于保存前端网页。
+4. 管理员密码只保存在服务器环境变量中。
+5. 普通用户可以上传内容，但不能执行审核、删除和清空操作。
+6. 上传内容默认状态为 pending，管理员审核通过后才会显示。
+7. 本程序适用于 Windows Server、Windows 10 和 Windows 11。
+
+
+二、package.json
+==================================================
+
+{
+  "name": "student-network",
+  "version": "1.0.0",
+  "description": "三十五中学生网后端",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "multer": "^1.4.5-lts.1"
+  }
+}
+
+
+三、.env.example
+==================================================
+
+# 服务器端口
+PORT=3000
+
+# 管理员密码，请务必修改
+ADMIN_PASSWORD=请修改为复杂的管理员密码
+
+# 会话密钥，请修改为随机长字符串
+SESSION_SECRET=请修改为一段至少32位的随机字符串
+
+# 最大上传文件大小，单位为 MB
+MAX_FILE_SIZE_MB=500
+
+# 运行环境
+NODE_ENV=production
+
+
+四、server.js
+==================================================
+
+require('dotenv').config();
+
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const Database = require('better-sqlite3');
+const multer = require('multer');
+const helmet = require('helmet');
+const cookieParser = require('cookie-parser');
+const rateLimit = require('express-rate-limit');
+
+const app = express();
+
+const PORT = Number(process.env.PORT || 3000);
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const SESSION_SECRET = process.env.SESSION_SECRET;
+const MAX_FILE_SIZE_MB = Number(process.env.MAX_FILE_SIZE_MB || 500);
+const MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024;
+
+if (!ADMIN_PASSWORD || ADMIN_PASSWORD.includes('请修改')) {
+  console.error('错误：请在 .env 文件中设置 ADMIN_PASSWORD');
+  process.exit(1);
+}
+
+if (!SESSION_SECRET || SESSION_SECRET.includes('请修改')) {
+  console.error('错误：请在 .env 文件中设置 SESSION_SECRET');
+  process.exit(1);
+}
+
+const ROOT_DIR = __dirname;
+const DATA_DIR = path.join(ROOT_DIR, 'data');
+const UPLOAD_DIR = path.join(ROOT_DIR, 'uploads');
+const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
+
+fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(PUBLIC_DIR, { recursive: true });
+
+app.disable('x-powered-by');
+
+app.use(helmet({
+  crossOriginResourcePolicy: {
+    policy: 'cross-origin'
+  }
+}));
+
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+
+app.use(express.static(PUBLIC_DIR));
+
+const db = new Database(path.join(DATA_DIR, 'student-network.db'));
+
+db.pragma('journal_mode = WAL');
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS videos (
+    id TEXT PRIMARY KEY,
+    original_name TEXT NOT NULL,
+    stored_name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    file_size INTEGER NOT NULL,
+    author TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+`);
+
+const allowedMimeTypes = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+  'video/x-msvideo',
+  'video/mpeg'
+]);
+
+const allowedExtensions = new Set([
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.gif',
+  '.webp',
+  '.mp4',
+  '.webm',
+  '.mov',
+  '.avi',
+  '.mpeg',
+  '.mpg'
+]);
+
+function createId() {
+  return crypto.randomBytes(12).toString('hex');
+}
+
+function hashToken(token) {
+  return crypto
+    .createHmac('sha256', SESSION_SECRET)
+    .update(token)
+    .digest('hex');
+}
+
+function safeFileName(fileName) {
+  return path.basename(fileName)
+    .replace(/[^\w\u4e00-\u9fff.\-() ]/g, '_')
+    .slice(0, 180);
+}
+
+function isVideo(mimeType) {
+  return mimeType.startsWith('video/');
+}
+
+function isImage(mimeType) {
+  return mimeType.startsWith('image/');
+}
+
+function removeUploadedFile(storedName) {
+  const filePath = path.join(UPLOAD_DIR, storedName);
+
+  if (fs.existsSync(filePath)) {
+    try {
+      fs.unlinkSync(filePath);
+    } catch (error) {
+      console.error('删除文件失败：', error.message);
+    }
+  }
+}
+
+function publicVideo(item) {
+  return {
+    id: item.id,
+    name: item.original_name,
+    original_name: item.original_name,
+    author: item.author,
+    type: item.mime_type,
+    mime_type: item.mime_type,
+    size: item.file_size,
+    file_size: item.file_size,
+    status: item.status,
+    time: item.created_at,
+    created_at: item.created_at,
+    file_url: `/uploads/${encodeURIComponent(item.stored_name)}`,
+    url: `/uploads/${encodeURIComponent(item.stored_name)}`
+  };
+}
+
+function getVideoById(id) {
+  return db.prepare(`
+    SELECT *
+    FROM videos
+    WHERE id = ?
+  `).get(id);
+}
+
+function createAdminSession() {
+  const token = crypto.randomBytes(48).toString('hex');
+  const tokenHash = hashToken(token);
+  const now = Date.now();
+  const expiresAt = now + 8 * 60 * 60 * 1000;
+
+  db.prepare(`
+    INSERT INTO sessions (token_hash, expires_at, created_at)
+    VALUES (?, ?, ?)
+  `).run(tokenHash, expiresAt, now);
+
+  return {
+    token,
+    expiresAt
+  };
+}
+
+function requireAdmin(req, res, next) {
+  const token = req.cookies.admin_session;
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: '需要管理员登录'
+    });
+  }
+
+  const tokenHash = hashToken(token);
+
+  const session = db.prepare(`
+    SELECT *
+    FROM sessions
+    WHERE token_hash = ?
+      AND expires_at > ?
+  `).get(tokenHash, Date.now());
+
+  if (!session) {
+    res.clearCookie('admin_session');
+    return res.status(401).json({
+      success: false,
+      message: '管理员登录已过期'
+    });
+  }
+
+  next();
+}
+
+const uploadStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, UPLOAD_DIR);
+  },
+
+  filename: function (req, file, cb) {
+    const extension = path.extname(file.originalname).toLowerCase();
+    const storedName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${extension}`;
+    cb(null, storedName);
+  }
+});
+
+const upload = multer({
+  storage: uploadStorage,
+  limits: {
+    fileSize: MAX_FILE_SIZE,
+    files: 20
+  },
+
+  fileFilter: function (req, file, cb) {
+    const extension = path.extname(file.originalname).toLowerCase();
+
+    if (!allowedMimeTypes.has(file.mimetype)) {
+      return cb(new Error('不支持的文件类型'));
+    }
+
+    if (!allowedExtensions.has(extension)) {
+      return cb(new Error('不支持的文件扩展名'));
+    }
+
+    if (!isImage(file.mimetype) && !isVideo(file.mimetype)) {
+      return cb(new Error('只允许上传图片或视频'));
+    }
+
+    cb(null, true);
+  }
+});
+
+const uploadLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: '上传操作过于频繁，请稍后再试'
+  }
+});
+
+const loginLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: '登录尝试次数过多，请稍后再试'
+  }
+});
+
+
+/*
+  管理员登录
+  POST /api/auth/login
+  请求体：
+  {
+    "password": "管理员密码"
+  }
+*/
+app.post('/api/auth/login', loginLimiter, (req, res) => {
+  const password = String(req.body.password || '');
+
+  if (!password || password !== ADMIN_PASSWORD) {
+    return res.status(401).json({
+      success: false,
+      message: '管理员密码错误'
+    });
+  }
+
+  const session = createAdminSession();
+
+  res.cookie('admin_session', session.token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 8 * 60 * 60 * 1000,
+    path: '/'
+  });
+
+  res.json({
+    success: true,
+    message: '管理员登录成功',
+    expires_at: session.expiresAt
+  });
+});
+
+
+/*
+  管理员退出登录
+  POST /api/auth/logout
+*/
+app.post('/api/auth/logout', requireAdmin, (req, res) => {
+  const token = req.cookies.admin_session;
+
+  if (token) {
+    db.prepare(`
+      DELETE FROM sessions
+      WHERE token_hash = ?
+    `).run(hashToken(token));
+  }
+
+  res.clearCookie('admin_session');
+
+  res.json({
+    success: true,
+    message: '已退出管理员登录'
+  });
+});
+
+
+/*
+  检查管理员登录状态
+  GET /api/auth/me
+*/
+app.get('/api/auth/me', (req, res) => {
+  const token = req.cookies.admin_session;
+
+  if (!token) {
+    return res.json({
+      success: true,
+      logged_in: false
+    });
+  }
+
+  const session = db.prepare(`
+    SELECT *
+    FROM sessions
+    WHERE token_hash = ?
+      AND expires_at > ?
+  `).get(hashToken(token), Date.now());
+
+  res.json({
+    success: true,
+    logged_in: Boolean(session)
+  });
+});
+
+
+/*
+  上传内容
+  POST /api/uploads
+
+  表单字段：
+  author：作者姓名
+  files：一个或多个图片或视频文件
+*/
+app.post(
+  '/api/uploads',
+  uploadLimiter,
+  upload.array('files', 20),
+  (req, res) => {
+    const author = String(req.body.author || '').trim();
+
+    if (!author) {
+      if (req.files) {
+        req.files.forEach(file => removeUploadedFile(file.filename));
+      }
+
+      return res.status(400).json({
+        success: false,
+        message: '作者姓名不能为空'
+      });
+    }
+
+    if (author.length > 50) {
+      if (req.files) {
+        req.files.forEach(file => removeUploadedFile(file.filename));
+      }
+
+      return res.status(400).json({
+        success: false,
+        message: '作者姓名不能超过50个字符'
+      });
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: '请选择需要上传的文件'
+      });
+    }
+
+    const now = new Date().toISOString();
+    const insert = db.prepare(`
+      INSERT INTO videos (
+        id,
+        original_name,
+        stored_name,
+        mime_type,
+        file_size,
+        author,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    `);
+
+    const transaction = db.transaction((files) => {
+      return files.map(file => {
+        const id = createId();
+
+        insert.run(
+          id,
+          safeFileName(file.originalname),
+          file.filename,
+          file.mimetype,
+          file.size,
+          author,
+          now,
+          now
+        );
+
+        return {
+          id,
+          name: safeFileName(file.originalname),
+          author,
+          type: file.mimetype,
+          size: file.size,
+          status: 'pending',
+          time: now,
+          file_url: `/uploads/${encodeURIComponent(file.filename)}`
+        };
+      });
+    });
+
+    const items = transaction(req.files);
+
+    res.status(201).json({
+      success: true,
+      message: '上传成功，等待管理员审核',
+      items
+    });
+  }
+);
+
+
+/*
+  获取已审核通过的节目
+  GET /api/videos
+*/
+app.get('/api/videos', (req, res) => {
+  const list = db.prepare(`
+    SELECT *
+    FROM videos
+    WHERE status = 'passed'
+    ORDER BY created_at DESC
+  `).all();
+
+  res.json({
+    success: true,
+    items: list.map(publicVideo)
+  });
+});
+
+
+/*
+  获取待审核节目
+  GET /api/videos/pending
+*/
+app.get('/api/videos/pending', requireAdmin, (req, res) => {
+  const list = db.prepare(`
+    SELECT *
+    FROM videos
+    WHERE status = 'pending'
+    ORDER BY created_at DESC
+  `).all();
+
+  res.json({
+    success: true,
+    items: list.map(publicVideo)
+  });
+});
+
+
+/*
+  审核通过
+  PATCH /api/videos/:id/pass
+*/
+app.patch('/api/videos/:id/pass', requireAdmin, (req, res) => {
+  const item = getVideoById(req.params.id);
+
+  if (!item) {
+    return res.status(404).json({
+      success: false,
+      message: '节目不存在'
+    });
+  }
+
+  if (item.status !== 'pending') {
+    return res.status(400).json({
+      success: false,
+      message: '该节目已经处理过'
+    });
+  }
+
+  db.prepare(`
+    UPDATE videos
+    SET status = 'passed',
+        updated_at = ?
+    WHERE id = ?
+  `).run(new Date().toISOString(), item.id);
+
+  res.json({
+    success: true,
+    message: '审核通过'
+  });
+});
+
+
+/*
+  拒绝内容
+  DELETE /api/videos/:id/reject
+*/
+app.delete('/api/videos/:id/reject', requireAdmin, (req, res) => {
+  const item = getVideoById(req.params.id);
+
+  if (!item) {
+    return res.status(404).json({
+      success: false,
+      message: '节目不存在'
+    });
+  }
+
+  db.prepare(`
+    DELETE FROM videos
+    WHERE id = ?
+  `).run(item.id);
+
+  removeUploadedFile(item.stored_name);
+
+  res.json({
+    success: true,
+    message: '已拒绝并删除该节目'
+  });
+});
+
+
+/*
+  删除已通过的节目
+  DELETE /api/videos/:id
+*/
+app.delete('/api/videos/:id', requireAdmin, (req, res) => {
+  const item = getVideoById(req.params.id);
+
+  if (!item) {
+    return res.status(404).json({
+      success: false,
+      message: '节目不存在'
+    });
+  }
+
+  db.prepare(`
+    DELETE FROM videos
+    WHERE id = ?
+  `).run(item.id);
+
+  removeUploadedFile(item.stored_name);
+
+  res.json({
+    success: true,
+    message: '节目已删除'
+  });
+});
+
+
+/*
+  清空全部已通过节目
+  DELETE /api/videos
+*/
+app.delete('/api/videos', requireAdmin, (req, res) => {
+  const list = db.prepare(`
+    SELECT *
+    FROM videos
+    WHERE status = 'passed'
+  `).all();
+
+  const transaction = db.transaction(() => {
+    db.prepare(`
+      DELETE FROM videos
+      WHERE status = 'passed'
+    `).run();
+
+    list.forEach(item => {
+      removeUploadedFile(item.stored_name);
+    });
+  });
+
+  transaction();
+
+  res.json({
+    success: true,
+    message: '已清空节目库',
+    count: list.length
+  });
+});
+
+
+/*
+  获取服务器状态
+  GET /api/health
+*/
+app.get('/api/health', (req, res) => {
+  res.json({
+    success: true,
+    status: 'ok',
+    time: new Date().toISOString()
+  });
+});
+
+
+/*
+  静态文件访问
+*/
+app.use(
+  '/uploads',
+  express.static(UPLOAD_DIR, {
+    dotfiles: 'deny',
+    index: false,
+    fallthrough: false,
+    setHeaders: function (res) {
+      res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+  })
+);
+
+
+/*
+  上传错误处理
+*/
+app.use((error, req, res, next) => {
+  if (error instanceof multer.MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({
+        success: false,
+        message: `文件不能超过 ${MAX_FILE_SIZE_MB}MB`
+      });
+    }
+
+    return res.status(400).json({
+      success: false,
+      message: `上传失败：${error.message}`
+    });
+  }
+
+  if (error) {
+    return res.status(400).json({
+      success: false,
+      message: error.message || '服务器处理失败'
+    });
+  }
+
+  next();
+});
+
+
+/*
+  未找到接口
+*/
+app.use('/api', (req, res) => {
+  res.status(404).json({
+    success: false,
+    message: '接口不存在'
+  });
+});
+
+
+/*
+  访问网页首页
+*/
+app.get('*', (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
+});
+
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('==========================================');
+  console.log('三十五中学生网服务器已启动');
+  console.log(`本机访问：http://localhost:${PORT}`);
+  console.log(`局域网访问：http://服务器IP:${PORT}`);
+  console.log(`上传目录：${UPLOAD_DIR}`);
+  console.log(`数据库目录：${DATA_DIR}`);
+  console.log('==========================================');
+});
+
+
+五、start.bat
+==================================================
+
+@echo off
+chcp 65001 > nul
+title 三十五中学生网服务器
+
+if not exist node_modules (
+    echo 正在安装依赖，请稍候...
+    npm install
+)
+
+if not exist data (
+    mkdir data
+)
+
+if not exist uploads (
+    mkdir uploads
+)
+
+if not exist .env (
+    echo 错误：没有找到 .env 文件。
+    echo 请先复制 .env.example 并重命名为 .env。
+    pause
+    exit /b 1
+)
+
+echo 正在启动三十五中学生网服务器...
+npm start
+
+pause
+
+
+六、Windows Server 安装和运行方法
+==================================================
+
+1. 安装 Node.js
+
+访问：
+
+https://nodejs.org/
+
+建议下载 Node.js 20 LTS 或更高版本。
+
+安装时保持默认选项即可。
+
+
+2. 创建项目目录
+
+例如：
+
+D:\student-network
+
+
+3. 创建以下文件
+
+将本文件中的内容分别复制为：
+
+D:\student-network\server.js
+D:\student-network\package.json
+D:\student-network\.env.example
+D:\student-network\start.bat
+
+
+4. 创建文件夹
+
+在项目目录中创建：
+
+D:\student-network\data
+D:\student-network\uploads
+D:\student-network\public
+
+
+5. 创建 .env 文件
+
+复制：
+
+.env.example
+
+重命名为：
+
+.env
+
+注意：Windows 资源管理器可能隐藏文件扩展名。
+
+.env 文件示例：
+
+PORT=3000
+ADMIN_PASSWORD=MyStrongPassword_2026_ChangeMe
+SESSION_SECRET=8f4f7a18c0b24d6e9c77c1e35c7a9a4d_random_secret
+MAX_FILE_SIZE_MB=500
+NODE_ENV=production
+
+请务必修改 ADMIN_PASSWORD 和 SESSION_SECRET。
+
+
+6. 安装依赖
+
+在项目目录中打开 PowerShell：
+
+cd D:\student-network
+npm install
+
+
+7. 放入前端文件
+
+将原来的前端文件放入：
+
+D:\student-network\public\index.html
+
+将 logo.png 放入：
+
+D:\student-network\public\logo.png
+
+
+8. 启动服务器
+
+方法一：双击 start.bat。
+
+方法二：在 PowerShell 中执行：
+
+cd D:\student-network
+npm start
+
+
+9. 浏览器访问
+
+服务器本机：
+
+http://localhost:3000
+
+局域网其他电脑：
+
+http://服务器IP:3000
+
+例如：
+
+http://192.168.1.100:3000
+
+
+七、Windows 防火墙设置
+==================================================
+
+如果局域网中的其他设备无法访问，需要使用管理员身份打开 PowerShell，执行：
+
+New-NetFirewallRule `
+  -DisplayName "三十五中学生网3000端口" `
+  -Direction Inbound `
+  -Protocol TCP `
+  -LocalPort 3000 `
+  -Action Allow
+
+如果服务器使用的是其他端口，请将 3000 修改成对应端口。
+
+
+八、前端必须修改的接口调用
+==================================================
+
+原来的前端使用 localStorage 保存数据，部署服务器后必须改为请求后端接口。
+
+上传代码示例：
+
+async function uploadFilesToServer(author, files) {
+  const formData = new FormData();
+
+  formData.append('author', author);
+
+  for (const file of files) {
+    formData.append('files', file);
+  }
+
+  const response = await fetch('/api/uploads', {
+    method: 'POST',
+    body: formData
+  });
+
+  const result = await response.json();
+
+  if (!response.ok) {
+    throw new Error(result.message || '上传失败');
+  }
+
+  return result;
+}
+
+
+获取已通过节目：
+
+async function loadPassedVideos() {
+  const response = await fetch('/api/videos');
+  const result = await response.json();
+
+  if (!response.ok) {
+    throw new Error(result.message || '获取节目失败');
+  }
+
+  return result.items;
+}
+
+
+管理员登录：
+
+async function adminLogin(password) {
+  const response = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ password })
+  });
+
+  const result = await response.json();
+
+  if (!response.ok) {
+    throw new Error(result.message || '登录失败');
+  }
+
+  return result;
+}
+
+
+获取待审核内容：
+
+async function loadPendingVideos() {
+  const response = await fetch('/api/videos/pending');
+
+  if (response.status === 401) {
+    throw new Error('管理员登录已过期');
+  }
+
+  const result = await response.json();
+  return result.items;
+}
+
+
+审核通过：
+
+async function passVideo(id) {
+  const response = await fetch(`/api/videos/${id}/pass`, {
+    method: 'PATCH'
+  });
+
+  const result = await response.json();
+
+  if (!response.ok) {
+    throw new Error(result.message || '审核失败');
+  }
+
+  return result;
+}
+
+
+拒绝内容：
+
+async function rejectVideo(id) {
+  const response = await fetch(`/api/videos/${id}/reject`, {
+    method: 'DELETE'
+  });
+
+  const result = await response.json();
+
+  if (!response.ok) {
+    throw new Error(result.message || '删除失败');
+  }
+
+  return result;
+}
+
+
+删除已通过内容：
+
+async function deleteVideo(id) {
+  const response = await fetch(`/api/videos/${id}`, {
+    method: 'DELETE'
+  });
+
+  const result = await response.json();
+
+  if (!response.ok) {
+    throw new Error(result.message || '删除失败');
+  }
+
+  return result;
+}
+
+
+清空已通过节目：
+
+async function clearPassedVideos() {
+  const response = await fetch('/api/videos', {
+    method: 'DELETE'
+  });
+
+  const result = await response.json();
+
+  if (!response.ok) {
+    throw new Error(result.message || '清空失败');
+  }
+
+  return result;
+}
+
+
+九、前端显示服务器文件
+==================================================
+
+服务器返回的数据中：
+
+{
+  "id": "abc123",
+  "name": "节目.mp4",
+  "author": "张三",
+  "type": "video/mp4",
+  "status": "passed",
+  "file_url": "/uploads/文件名.mp4"
+}
+
+显示图片：
+
+const image = document.createElement('img');
+image.src = item.file_url;
+
+
+显示视频：
+
+const video = document.createElement('video');
+video.src = item.file_url;
+video.controls = true;
+
+
+不能再使用：
+
+URL.createObjectURL(file)
+
+也不能再使用：
+
+localStorage.setItem('video_passed', ...)
+
+服务器版本的文件地址必须使用：
+
+item.file_url
+
+
+十、重要安全说明
+==================================================
+
+1. 不要把管理员密码写进前端 JavaScript。
+
+错误：
+
+const ADMIN_PASSWORD = '123456';
+
+正确：
+
+管理员密码只写在服务器的 .env 文件中。
+
+
+2. 不要把 .env 文件上传到公开网站。
+
+3. 不要公开访问 data 文件夹。
+
+4. 不要删除 uploads 文件夹，否则已经上传的媒体文件会丢失。
+
+5. 建议定期备份：
+
+data/student-network.db
+uploads/
+
+
+6. 建议管理员密码至少包含：
+
+大写字母
+小写字母
+数字
+特殊符号
+
+7. 如果正式对外开放，建议使用 HTTPS 和域名。
+
+8. 如果上传视频较大，需要同时调整：
+
+.env 中的 MAX_FILE_SIZE_MB
+Nginx 的 client_max_body_size
+IIS 的上传大小限制
+
+
+十一、使用 IIS 反向代理时的说明
+==================================================
+
+如果使用 Windows Server IIS，建议：
+
+1. Node.js 程序继续监听 3000 端口。
+2. IIS 监听 80 或 443 端口。
+3. IIS 将请求转发到：
+
+http://127.0.0.1:3000
+
+
+也可以暂时直接通过：
+
+http://服务器IP:3000
+
+访问。
+
+正式部署时建议配置：
+
+https://你的域名
+
+
+十二、数据库备份
+==================================================
+
+停止服务器后，将以下文件复制到备份目录：
+
+D:\student-network\data\student-network.db
+
+同时备份：
+
+D:\student-network\uploads
+
+
+十三、常见问题
+==================================================
+
+问题一：npm install 报错
+
+解决方法：
+
+1. 确认已经安装 Node.js 20 LTS。
+2. 使用管理员身份打开 PowerShell。
+3. 执行：
+
+npm cache clean --force
+npm install
+
+
+问题二：提示端口被占用
+
+修改 .env：
+
+PORT=3001
+
+然后访问：
+
+http://localhost:3001
+
+
+问题三：局域网无法访问
+
+执行：
+
+New-NetFirewallRule `
+  -DisplayName "三十五中学生网3000端口" `
+  -Direction Inbound `
+  -Protocol TCP `
+  -LocalPort 3000 `
+  -Action Allow
+
+
+问题四：上传文件太大
+
+修改 .env：
+
+MAX_FILE_SIZE_MB=1000
+
+然后重启服务器。
+
+
+问题五：重启服务器后管理员登录失效
+
+这是正常现象。管理员登录 Cookie 可能仍然存在，但如果服务器清理了会话，需要重新登录。
+
+
+问题六：网页能打开但上传失败
+
+请检查：
+
+1. 浏览器开发者工具中的 Network。
+2. 是否请求了 /api/uploads。
+3. 前端字段名是否为 files。
+4. 作者字段是否为 author。
+5. uploads 文件夹是否存在。
+6. Node.js 控制台是否出现错误。
+
+
+十四、接口测试示例
+==================================================
+
+检查服务器状态：
+
+浏览器打开：
+
+http://localhost:3000/api/health
+
+正常结果：
+
+{
+  "success": true,
+  "status": "ok"
+}
+
+
+获取节目：
+
+浏览器打开：
+
+http://localhost:3000/api/videos
+
+正常结果：
+
+{
+  "success": true,
+  "items": []
+}
+
+
+十五、启动命令汇总
+==================================================
+
+进入项目目录：
+
+cd D:\student-network
+
+安装依赖：
+
+npm install
+
+启动服务器：
+
+npm start
+
+停止服务器：
+
+在运行窗口中按：
+
+Ctrl + C
+
+
+十六、生产环境建议使用 PM2
+==================================================
+
+安装 PM2：
+
+npm install -g pm2
+
+启动：
+
+pm2 start server.js --name student-network
+
+查看状态：
+
+pm2 status
+
+查看日志：
+
+pm2 logs student-network
+
+设置开机启动：
+
+pm2 save
+pm2 startup
+
+注意：Windows 使用 PM2 开机启动时，需要按照命令提示完成额外配置。
+
+
+十七、结论
+==================================================
+
+该后端具备：
+
+1. Windows Server 运行支持。
+2. 图片和视频上传。
+3. SQLite 数据库保存。
+4. 管理员 Cookie 登录。
+5. 待审核状态。
+6. 审核通过。
+7. 拒绝并删除。
+8. 删除已通过节目。
+9. 清空节目库。
+10. 上传大小限制。
+11. 上传类型限制。
+12. 管理员接口保护。
+13. 上传文件持久化保存。
+14. 服务器重启后数据仍然保留。
+
+==================================================
+文件结束
+==================================================
